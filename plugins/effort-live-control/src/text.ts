@@ -45,11 +45,6 @@ export function unsteeredNote(model: string): string {
   return ` Your current model, ${model}, is not steered here: the level applies once a steered model answers.`;
 }
 
-/** What a press adds while the agent's last request carried no effort level: the level waits for one that does. */
-export function levellessNote(model: string): string {
-  return ` Your current model, ${model}, takes no effort level here: the level applies once a request carries one.`;
-}
-
 /** What a button press at the end of the range answers. */
 export function boundText(direction: Direction, level: string): string {
   return `Your effort is already ${level}, the ${direction === 'up' ? 'ceiling' : 'floor'} of your range; it holds there until you call effort_auto.`;

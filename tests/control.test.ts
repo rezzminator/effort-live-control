@@ -560,17 +560,6 @@ describe('buttons', () => {
 });
 
 describe('a press while the model is not steered', () => {
-  it('each button says the level waits while the requests carry no effort level, and the next request with one gets it', () => {
-    const c = make({ judge: false });
-    c.onRequestWithoutLevel('claude-opus-5-5');
-    const note = ' Your current model, claude-opus-5-5, takes no effort level here: the level applies once a request carries one.';
-    expect(c.onButton('up').text).toBe(`Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto.${note}`);
-    expect(c.onAuto().text).toBe(`Effort back to medium, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.${note}`);
-    c.onButton('up');
-    expect(c.onRequest('claude-opus-5-5', 'medium').send).toBe('high');
-    expect(c.onButton('down').text).toBe('Effort lowered to medium for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
-  });
-
   it('each button says the level waits for a steered model, and that model then gets it', () => {
     const c = make({ judge: false, models: ['claude-opus'] });
     expect(c.onRequest('claude-haiku-5-5', 'low').send).toBeUndefined();
@@ -652,18 +641,6 @@ describe('the hold: no automatic rule moves a pressed level', () => {
     const out = c.onSpawn({ childId: 'c1', type: 'lander' });
     expect(c.level).toBe('xhigh');
     expect(rows(out, 'landing')).toEqual([{ event: 'landing', from: 'xhigh', to: 'xhigh', held: true }]);
-  });
-
-  it("hold: a new main-chat turn's home leaves the level but becomes the home effort_auto returns to", () => {
-    const c = make({ judge: false });
-    c.onButton('up');
-    c.setHome('xhigh');
-    expect(c.level).toBe('high');
-    c.setHome('medium');
-    expect(c.onRequest(MODEL, undefined).send).toBe('high');
-    c.setHome('xhigh');
-    c.onAuto();
-    expect(c.level).toBe('xhigh');
   });
 });
 
@@ -904,54 +881,6 @@ describe('judge-busy', () => {
   });
 });
 
-describe('setHome (a new turn of the main chat)', () => {
-  it('main chat: outside a struggle the home is the level and the resting level', () => {
-    const c = make({ judge: false });
-    c.setHome('xhigh');
-    expect(c.onRequest('claude-opus-5-5', 'low').send).toBe('xhigh');
-    expect(c.base).toBe('xhigh');
-    c.setHome('high');
-    expect(c.onRequest('claude-opus-5-5', 'low').send).toBe('high');
-  });
-
-  it('main chat: the home is held within the range', () => {
-    const c = make({ judge: false });
-    c.setHome('low');
-    expect(c.level).toBe('medium');
-    c.setHome('max');
-    expect(c.level).toBe('xhigh');
-  });
-
-  it('main chat: an open struggle goes on across the new home and resolves to it', () => {
-    const c = make({ judge: false });
-    c.onTestRun(FAIL);
-    expect(c.level).toBe('high');
-    c.setHome('medium');
-    expect(c.level).toBe('high'); // the trouble is not over: a prompt only changes the home
-    expect(c.struggleOpen).toBe(true);
-    c.onTestRun(PASS);
-    expect(c.level).toBe('medium');
-  });
-
-  it('main chat: a new home above the raised level lifts it, and the struggle resolves to that home', () => {
-    const c = make({ judge: false });
-    c.onTestRun(FAIL);
-    c.setHome('xhigh');
-    expect(c.level).toBe('xhigh');
-    c.onTestRun(PASS);
-    expect(c.level).toBe('xhigh');
-  });
-
-  it('main chat: a failure streak continues into the next turn', () => {
-    const c = make({ judge: false });
-    c.onTestRun(FAIL);
-    c.setHome('high');
-    const out = c.onTestRun(FAIL);
-    expect(c.ownFails).toBe(2);
-    expect(rows(out, 'mechanical')).toEqual([{ event: 'mechanical', tripwire: 'fail2', from: 'high', to: 'xhigh' }]);
-  });
-});
-
 describe('struggle decay', () => {
   const MODEL = 'claude-opus-5-5';
   const quiet = (c: Controller, n: number): Outcome[] => Array.from({ length: n }, () => c.onRequest(MODEL, undefined));
@@ -1034,17 +963,6 @@ describe('struggle decay', () => {
     quiet(c, 2);
     expect(c.level).toBe('high');
     expect(c.end()).toMatchObject({ struggles: 2 });
-  });
-
-  it('decay: a home that moved during the struggle is the level a later struggle opens from', () => {
-    const c = make({ judge: false, struggleDecay: 2 });
-    c.onTestRun(FAIL);
-    c.setHome('high');
-    quiet(c, 2);
-    expect(c.level).toBe('high');
-    c.onTestRun(FAIL);
-    c.onTestRun(PASS);
-    expect(c.level).toBe('high');
   });
 
   it('decay: 0 turns it off', () => {

@@ -1,6 +1,6 @@
 {
   "name": "effort-live-control",
-  "version": "0.3.6-dev.2",
+  "version": "0.4.0-dev.1",
   "description": "Set each Claude Code sub-agent's reasoning effort per spawn with [effort: low|medium|high|xhigh|max], and let an opted-in agent's effort rise at each failing test run or red sub-task and come home once the trouble resolves.",
   "license": "MIT",
   "author": {
@@ -98,37 +98,6 @@
       "title": "judgeTimeoutMs: milliseconds the judge call may take",
       "description": "A judge call that has not answered after this many milliseconds is dropped and the effort rises one step instead.",
       "default": 45000,
-      "min": 1
-    },
-    "mainChat": {
-      "type": "string",
-      "title": "mainChat: how the main chat is steered",
-      "description": "off: the main chat is untouched and the effort buttons refuse it. tripwires: it is steered like a steered agent, its home being the level each request asks for (your /effort): a failing test run of its own or a red sub-agent return raises it, and it returns once the trouble resolves. reader: as tripwires, and the prompt reader sets the turn's home at each new prompt. Only models listed in models are steered. Do not enable another plugin that steers the main chat at the same time.",
-      "default": "reader"
-    },
-    "casebookFile": {
-      "type": "string",
-      "title": "casebookFile: the prompt reader's casebook (JSONL)",
-      "description": "One past turn per line: {\"message\": text, \"previous\": text, \"level\": \"medium\"|\"high\"|\"xhigh\", \"note\": text, \"core\": true|false}. Core rows (at most 40) are always shown to the reader; the six other rows whose message is nearest to the new prompt (TF-IDF cosine) are shown as precedents. A leading ~ is your home directory. A missing or unreadable file makes the reader use a small invented casebook shipped with the plugin (an unreadable one is also reported in the log); an existing empty file, or an empty value, runs the reader without a casebook. A malformed line is skipped and named.",
-      "default": "~/.local/state/effort-live-control/casebook.jsonl"
-    },
-    "promptModel": {
-      "type": "string",
-      "title": "promptModel: the model that reads each prompt",
-      "description": "The model alias or id of the prompt reader call (one call per new prompt, with mainChat reader).",
-      "default": "haiku"
-    },
-    "promptEffort": {
-      "type": "string",
-      "title": "promptEffort: the prompt reader call's own effort",
-      "description": "The reasoning effort of the prompt reader call: low, medium, high, xhigh or max.",
-      "default": "xhigh"
-    },
-    "promptTimeoutMs": {
-      "type": "number",
-      "title": "promptTimeoutMs: milliseconds the prompt reader call may take",
-      "description": "A reader call that has not answered after this many milliseconds is dropped and the turn goes at the level its first request asks for. The first request waits for the reader, so keep it short.",
-      "default": 10000,
       "min": 1
     },
     "buttons": {

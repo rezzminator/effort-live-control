@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Controller } from '../plugins/effort-live-control/src/control.ts';
 import { register } from '../plugins/effort-live-control/hooks/effort-live-control.ts';
-import { BUNDLED_CASEBOOK } from '../plugins/effort-live-control/src/bundled-casebook.ts';
 import { MAIN_REFUSED } from '../plugins/effort-live-control/src/text.ts';
 
 // A stand-in engine: host state that outlives a re-register, a clock the test
@@ -32,11 +31,7 @@ type Opts = {
   noProcess?: boolean;
   /** Paths whose read throws. */
   broken?: string[];
-  /** The main loop's model, as `$.session.model()` answers. */
-  mainModel?: string;
-  /** The transcript `$.session.messages()` answers. */
-  messages?: Array<{ role: 'user' | 'assistant'; text: string }>;
-  /** Answers every model call at once (the prompt reader); without it a call waits in `judgeCalls`. */
+  /** Answers every model call at once (the judge's); without it a call waits in `judgeCalls`. */
   reply?: (request: any) => unknown;
   /** What `$.tool.list()` answers; none listed by default. */
   toolList?: () => Promise<Array<{ name: string; description: string; mcp: boolean }>>;
@@ -92,7 +87,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
       list: async (dir: string) => [...files.keys()].filter((file) => file.startsWith(dir + '/')).map((file) => ({ name: file.slice(dir.length + 1), kind: 'file', size: 0, isLink: false })),
     },
     env: { get: async (name: string) => env[name] },
-    session: { cwd: async () => '/proj', id: async () => 'sess1', model: async () => opts.mainModel ?? 'claude-opus-5-5', messages: async () => opts.messages ?? [] },
+    session: { cwd: async () => '/proj', id: async () => 'sess1', model: async () => 'claude-opus-5-5' },
     tool: {
       register: async (spec: any) => (registered.push(spec), { tool: `mcp__effort-live-control__${spec.name}` }),
       list: opts.toolList ?? (async () => []),
@@ -132,16 +127,8 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     return s;
   }
 
-  /** The texts of the prompts that will start a turn, in the order the engine starts them. */
-  const submitted: string[] = [];
-  const started = new Set<string>();
-
-  /** One request of the main chat in turn `turnId`; a turn's first request is preceded by its turn.start. Resolves to the effort it was sent at. */
+  /** One request of the main chat in turn `turnId`. Resolves to the effort it was sent at. */
   async function mainStep(effort: string | number | undefined, turnId = 't1', model = 'claude-opus-5-5'): Promise<string | undefined> {
-    if (!started.has(turnId)) {
-      started.add(turnId);
-      await hooks.get('turn.start')!($, { turnId, text: submitted.shift() ?? '' }, async (e: any) => ({ turnId: e.turnId }));
-    }
     let sent: string | undefined;
     const next = Object.assign(
       async function* (e: any) {
@@ -154,15 +141,6 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     for (let r = await gen.next(); !r.done; r = await gen.next());
     return sent;
   }
-
-  /** A prompt of the user's: `turnId` set means it was typed over a running turn, `wait` that it waits for that turn to end. */
-  const prompt = (text: string, turnId?: string, wait = false) => {
-    if (turnId === undefined || wait) submitted.push(text);
-    return hooks.get('prompt.submit')!($, { text, wait, origin: { kind: 'user' }, ...(turnId === undefined ? {} : { turnId }) }, async (e: any) => ({ text: e.text }));
-  };
-
-  /** The main chat's turn ends with `answer`. */
-  const completeMain = (answer: string, turnId = 't1') => hooks.get('turn.complete')!($, { answer, turnId, durationMs: 1, isAborted: false, reason: 'answer' }, async () => ({ text: '' }));
 
   /** The file's mtime moves, as an edit does. */
   const touch = async (path: string) => void mtimes.set(path, (mtimes.get(path) ?? 0) + 1);
@@ -188,7 +166,7 @@ function engine(state = new Map<string, unknown>(), opts: Opts = {}) {
     return text.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line) as Record<string, any>);
   };
   const sessionEnd = async (next = async () => ({})) => { if (hooks.has('session.end')) await hooks.get('session.end')!($, {}, next); };
-  return { $, state, statuses, touch, step, mainStep, prompt, completeMain, spawn, spawned, complete, tool, sessionStart, sessionEnd, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
+  return { $, state, statuses, touch, step, mainStep, spawn, spawned, complete, tool, sessionStart, sessionEnd, describeTool, fireTimers, tick, logs, timers, files, judgeCalls, registered, rows };
 }
 
 suite('agent.spawn', () => {
@@ -1071,16 +1049,6 @@ suite('struggle decay', () => {
     expect(await frontmatter.x.step('L1', 'low', undefined, OPUS)).toBe('medium');
   });
 
-  it('decay: the main chat decays too', async () => {
-    const { x } = withReader({ mainChat: 'tripwires', struggleDecay: 2 });
-    expect(await x.mainStep('medium', 't1')).toBe('medium');
-    await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
-    expect(await x.mainStep('medium', 't1')).toBe('high');
-    expect(await x.mainStep('medium', 't1')).toBe('high');
-    expect(await x.mainStep('medium', 't1')).toBe('medium');
-    expect(await resolvedRows(x)).toEqual([expect.objectContaining({ agent: 'main', from: 'high', to: 'medium', requests: 2, why: 'decay' })]);
-  });
-
   it('decay: an ordinary resolution says why: resolved', async () => {
     const { x, run } = await withLead(LEAD, { judge: false });
     await run('npm test', 'FAIL a');
@@ -1144,7 +1112,7 @@ suite('buttons', () => {
       { name: 'mcp__other__reset_effort_cache', description: 'Not it.', mcp: true },
       { name: 'mcp__steerer__set_effort', description: 'Sets the effort.', mcp: true },
     ];
-    const x = engine(new Map(), { toolList, options: { mainChat: 'off' } });
+    const x = engine(new Map(), { toolList });
     await x.sessionStart();
     await x.mainStep('high');
     for (const name of [UP, DOWN, AUTO]) {
@@ -1212,17 +1180,6 @@ suite('buttons', () => {
     const { out } = await pending;
     expect(out.result).toBe(MAIN_REFUSED(undefined));
     expect(x.logs.filter((line) => line.includes('tool list'))).toEqual([]);
-  });
-
-  it("main chat: a press after a request that carried no effort level says the level waits for one", async () => {
-    const x = engine();
-    await x.sessionStart();
-    expect(await x.mainStep('medium')).toBe('medium');
-    expect(await x.mainStep(undefined)).toBeUndefined();
-    const { out } = await x.tool(undefined, UP, {});
-    expect(out.result).toBe('Effort raised to high for your next replies (your range medium..xhigh); it holds until you call effort_auto. Your current model, claude-opus-5-5, takes no effort level here: the level applies once a request carries one.');
-    expect(await x.mainStep('medium')).toBe('high');
-    expect((await x.tool(undefined, UP, {})).out.result).toBe('Effort raised to xhigh for your next replies (your range medium..xhigh); it holds until you call effort_auto.');
   });
 
   it('effort_auto: a steered agent goes back to its launch level, and its tripwires steer it again', async () => {
@@ -1357,478 +1314,93 @@ suite('the decision log', () => {
   });
 });
 
-// ---- the main chat: the prompt reader sets the turn's level, tripwires steer it ----
+// ---- the main chat: never steered here; the judge's model route ----
 
 const say = (text: string) => ({ isAnswered: true, text, usage: USAGE });
-const CASEBOOK = '/fixture-home/t/.local/state/effort-live-control/casebook.jsonl';
-// The first bundled row as the reader's prompt renders it (its message alone, "yes", also stands in the instructions).
-const SHOWN_FIRST = `   user: ${BUNDLED_CASEBOOK[0]!.message}\n`;
-const caseLine = (r: Record<string, unknown> = {}) => JSON.stringify({ message: 'plan the cache layer', previous: 'ok', level: 'xhigh', note: 'a design', core: true, ...r });
+const REFUSAL_403 = { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
 
-/** An engine whose model calls (the prompt reader's) are answered at once by `script.next`, each call recorded. */
-function withReader(options: Record<string, unknown> = {}, extra: Opts = {}) {
+/** An engine with a steered `lead` agent L1 whose model calls (the judge's) are answered at once by `script.next`, each call recorded. */
+async function withJudge(options: Record<string, unknown> = {}, extra: Opts = {}) {
   const calls: any[] = [];
-  const script = { next: (): unknown => say('0.05 0.90 0.05') };
-  const x = engine(new Map(), { ...extra, options, reply: (request) => (calls.push(request), script.next()) });
-  return { x, calls, script };
+  const script = { next: (): unknown => say('90 - stuck') };
+  const x = engine(new Map(), { files: LEAD, ...extra, options: { judge: true, ...options }, reply: (request) => (calls.push(request), script.next()) });
+  await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+  const fail = async () => {
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    await x.tick();
+    await x.tick();
+  };
+  return { x, calls, script, fail };
 }
 
-suite('main chat: the prompt reader', () => {
-  it('main chat: a new prompt calls the reader once, and the first request goes at its level', async () => {
-    const { x, calls } = withReader();
-    await x.prompt('please fix the flaky parser test');
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ model: 'haiku', effort: 'xhigh', timeoutMs: 10000 });
-    expect(calls[0].prompt).toContain("User's new message: please fix the flaky parser test");
-    expect(calls[0].prompt).toContain("Agent's previous reply (end): (none: first message)");
-    expect(await x.mainStep('low')).toBe('high');
-    expect(await x.mainStep('low')).toBe('high');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', agent: 'main', p: [0.05, 0.9, 0.05], level: 'high', home: 'high', casebook: 36, casebookSource: 'bundled', precedents: 0 }));
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'step', agent: 'main', requested: 'low', sent: 'high' }));
-  });
-
-  it('main chat: the reader call options come from promptModel, promptEffort and promptTimeoutMs', async () => {
-    const { x, calls } = withReader({ promptModel: 'sonnet', promptEffort: 'low', promptTimeoutMs: 2500 });
-    await x.prompt('go');
-    expect(calls[0]).toMatchObject({ model: 'sonnet', effort: 'low', timeoutMs: 2500 });
-  });
-
-  it("main chat: the previous reply is the end of the last turn's answer", async () => {
-    const { x, calls } = withReader();
-    await x.prompt('first');
-    await x.mainStep('medium');
-    await x.completeMain(`${'z'.repeat(300)} Shall I build it?`);
-    await x.prompt('go');
-    expect(calls[1].prompt).toContain(`Agent's previous reply (end): ${`${'z'.repeat(300)} Shall I build it?`.slice(-200)}\n`);
-  });
-
-  it('main chat: a reply from before the plugin loaded comes from the transcript', async () => {
-    const { x, calls } = withReader({}, { messages: [{ role: 'assistant', text: 'earlier answer' }, { role: 'user', text: 'ok' }, { role: 'assistant', text: '' }] });
-    await x.prompt('go');
-    expect(calls[0].prompt).toContain("Agent's previous reply (end): earlier answer\n");
-  });
-
-  it('main chat: a message sent mid-turn makes no call and keeps the level', async () => {
-    const { x, calls } = withReader();
-    await x.prompt('first');
-    expect(await x.mainStep('low', 't1')).toBe('high');
-    await x.prompt('and also this', 't1');
-    await x.prompt('and also that', 't1', false);
-    expect(calls).toHaveLength(1);
-    expect(await x.mainStep('low', 't1')).toBe('high');
-  });
-
-  it("main chat: a queued prompt (wait) makes one call at submit, against the reply known then, and its turn's first request goes at the decided level", async () => {
-    const { x, calls, script } = withReader();
-    await x.prompt('first');
-    expect(await x.mainStep('low', 't1')).toBe('high');
-    await x.completeMain('EARLIER-REPLY', 't1');
-    await x.prompt('second', undefined);
-    expect(await x.mainStep('low', 't2')).toBe('high');
-    script.next = () => say('0.90 0.05 0.05');
-    await x.prompt('then do this', 't2', true);
-    expect(calls).toHaveLength(3);
-    expect(calls[2].prompt).toContain("User's new message: then do this");
-    expect(calls[2].prompt).toContain("Agent's previous reply (end): EARLIER-REPLY\n");
-    expect(await x.mainStep('low', 't2')).toBe('high'); // the running turn keeps its own level
-    await x.completeMain('LATER-REPLY', 't2');
-    expect(await x.mainStep('low', 't3')).toBe('medium'); // the queued prompt's turn goes at its decision
-    expect(await x.mainStep('low', 't3')).toBe('medium');
-  });
-
-  it("main chat: two queued prompts each decide their own turn, in order", async () => {
-    const { x, script } = withReader();
-    await x.prompt('first');
-    await x.mainStep('low', 't1');
-    script.next = () => say('0.90 0.05 0.05');
-    await x.prompt('queued one', 't1', true);
-    script.next = () => say('0.0 0.1 0.9');
-    await x.prompt('queued two', 't1', true);
-    await x.completeMain('a', 't1');
-    expect(await x.mainStep('low', 't2')).toBe('medium');
-    await x.completeMain('b', 't2');
-    expect(await x.mainStep('low', 't3')).toBe('xhigh');
-  });
-
-  it('main chat: a queued prompt whose reader gave no decision starts its turn at the requested level', async () => {
-    const { x, script } = withReader();
-    await x.prompt('first');
-    await x.mainStep('low', 't1');
-    script.next = () => ({ isAnswered: false, reason: 'aborted', usage: USAGE });
-    await x.prompt('queued', 't1', true);
-    await x.completeMain('a', 't1');
-    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh');
-  });
-
-  it('main chat: a timeout sends the requested level, with a reader-timeout row', async () => {
-    const { x, script } = withReader();
-    script.next = () => ({ isAnswered: false, reason: 'aborted', usage: USAGE });
-    await x.prompt('go');
-    expect(await x.mainStep('xhigh')).toBe('xhigh');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-timeout', agent: 'main', casebook: 36, casebookSource: 'bundled', precedents: 0 }));
-  });
-
-  it.each([
-    { name: 'default denial recovers on the current model', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', OPUS, OPUS], effort: 'high', disabled: false },
-    { name: 'both routes denied degrades once', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['haiku', OPUS], effort: 'medium', disabled: true },
-    { name: 'explicit nondefault model is preserved', options: { promptModel: 'sonnet' }, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['sonnet', 'sonnet'], effort: 'medium', disabled: false },
-    { name: 'transient failure does not change route', options: {}, status: 529, error: 'overloaded', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
-    { name: 'other 403 does not change route', options: {}, status: 403, error: 'permission_denied', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
-    { name: 'same error at 401 does not change route', options: {}, status: 401, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', 'haiku'], effort: 'medium', disabled: false },
-  ])('reader model route: $name', async ({ options, status, error, denied, models, effort, disabled }) => {
-    const { x, calls, script } = withReader(options);
-    script.next = () => calls.at(-1).model === OPUS && !denied
-      ? say('0.05 0.90 0.05')
-      : { isAnswered: false, reason: 'api-error', status, error, usage: USAGE };
-    await x.prompt('one');
-    expect(await x.mainStep('medium', 't1')).toBe(effort);
-    await x.completeMain('done', 't1');
-    await x.prompt('two');
-    expect(await x.mainStep('medium', 't2')).toBe(effort);
-    expect(calls.map((call) => call.model)).toEqual(models);
-    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(disabled ? 1 : 0);
-  });
-
-  it('keeps an explicit judge live after the default reader becomes unavailable', async () => {
-    const { x, calls, script } = withReader({ judge: true, judgeModel: 'sonnet' }, { files: LEAD });
-    script.next = () => calls.at(-1).model === 'sonnet'
-      ? say('90 - stuck')
-      : { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
-    await x.prompt('one');
-    expect(await x.mainStep('medium')).toBe('medium');
-    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
-    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
-    await x.tick();
-    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'judge', p: 90 }));
-    expect(calls.map((call) => call.model)).toEqual(['haiku', OPUS, 'sonnet']);
-    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(1);
-  });
-
-  it.each([{ denied: false, judgeFirst: false, concurrent: false }, { denied: true, judgeFirst: false, concurrent: false }, { denied: false, judgeFirst: true, concurrent: false }, { denied: true, judgeFirst: true, concurrent: false }, { denied: false, judgeFirst: false, concurrent: true }])('reader and judge share the default fallback (denied=$denied, judgeFirst=$judgeFirst, concurrent=$concurrent)', async ({ denied, judgeFirst, concurrent }) => {
-    const { x, calls, script } = withReader({ judge: true }, { files: LEAD });
-    const pending = [deferred<unknown>(), deferred<unknown>()];
-    const refusal = { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
-    script.next = () => concurrent && calls.at(-1).model === 'haiku'
-      ? pending[calls.length - 1]!.promise
-      : calls.at(-1).model === OPUS && !denied
-      ? say(calls.at(-1).system ? '90 - stuck' : '0.05 0.90 0.05')
-      : { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE };
-    const prompt = !judgeFirst ? x.prompt('one') : undefined;
-    if (concurrent) await x.tick();
-    else await prompt;
-    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
-    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
-    if (concurrent) {
-      expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku']);
-      pending[0]!.resolve(refusal);
-      await prompt;
-      expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku', OPUS]);
-      pending[1]!.resolve(refusal);
-    }
-    await x.tick();
-    if (judgeFirst) await x.prompt('one');
-    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
-    expect(calls.map((call) => call.model)).toEqual(concurrent ? ['haiku', 'haiku', OPUS, OPUS] : denied ? ['haiku', OPUS] : ['haiku', OPUS, OPUS]);
-    expect(await x.rows()).toContainEqual(expect.objectContaining(denied
-      ? { event: 'judge-failed', reason: 'model-unavailable' }
-      : { event: 'judge', p: 90 }));
-    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(denied ? 1 : 0);
-  });
-
-  it('main chat: an API error and a throw send the requested level, with a reader-failed row carrying the error', async () => {
-    const { x, script } = withReader();
-    script.next = () => ({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE });
-    await x.prompt('one');
-    expect(await x.mainStep('medium', 't1')).toBe('medium');
-    script.next = () => {
-      throw new Error('socket closed');
-    };
-    await x.prompt('two');
-    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh');
-    const failed = (await x.rows()).filter((row) => row.event === 'reader-failed');
-    expect(failed.map((row) => row.error)).toEqual(['api-error 529 overloaded', 'threw: socket closed']);
-  });
-
-  it('main chat: an unparsable answer sends the requested level, with a reader-unparsed row', async () => {
-    const { x, script } = withReader();
-    script.next = () => say('high');
-    await x.prompt('go');
-    expect(await x.mainStep('xhigh')).toBe('xhigh');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'reader-unparsed', agent: 'main' }));
-  });
-
-  it('main chat: the level is clamped into floor and ceiling, the row keeping both', async () => {
-    const low = withReader({ floor: 'high' });
-    low.script.next = () => say('0.9 0.05 0.05');
-    await low.x.prompt('go');
-    expect(await low.x.mainStep('low')).toBe('high');
-    expect(await low.x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', level: 'medium', home: 'high' }));
-    const high = withReader({ ceiling: 'high' });
-    high.script.next = () => say('0.0 0.1 0.9');
-    await high.x.prompt('go');
-    expect(await high.x.mainStep('low')).toBe('high');
-    expect(await high.x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', level: 'xhigh', home: 'high' }));
-  });
-
-  it('main chat: a model outside models is untouched, and the reader is not called for it', async () => {
-    const { x, calls } = withReader({}, { mainModel: 'claude-haiku-5-5' });
-    await x.prompt('go');
-    expect(calls).toHaveLength(0);
-    expect(await x.mainStep('low', 't1', 'claude-haiku-5-5')).toBe('low');
-    const gated = withReader();
-    await gated.x.prompt('go');
-    expect(await gated.x.mainStep('low', 't1', 'claude-haiku-5-5')).toBe('low');
-  });
-
-  it('main chat: a request with no effort of its own is passed through', async () => {
-    const { x } = withReader();
-    await x.prompt('go');
-    expect(await x.mainStep(undefined)).toBeUndefined();
-  });
-
-  it('main chat: the reader home lasts one turn; the next turn without a prompt goes at the requested level', async () => {
-    const { x } = withReader();
-    await x.prompt('go');
-    expect(await x.mainStep('low', 't1')).toBe('high');
-    expect(await x.mainStep('medium', 't2')).toBe('medium');
-  });
-});
-
-suite('main chat: the casebook', () => {
-  it('main chat: core rows and precedents are counted in the decision row', async () => {
-    const book = [caseLine(), caseLine({ message: 'fix the parser', level: 'high', core: false }), caseLine({ message: 'say hello', level: 'medium', core: false })].join('\n');
-    const { x, calls } = withReader({}, { files: { [CASEBOOK]: book } });
-    await x.prompt('fix the flaky parser');
-    expect(calls[0].prompt).toContain('# Casebook');
-    expect(await x.rows()).toContainEqual(expect.objectContaining({ event: 'prompt', casebook: 1, precedents: 1 }));
-  });
-
-  it('main chat: a missing casebook file uses the bundled casebook', async () => {
-    const { x, calls } = withReader();
-    await x.prompt('go');
-    expect(calls[0].prompt).toContain('# Casebook');
-    expect(calls[0].prompt).toContain(SHOWN_FIRST);
-    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
-    expect(row.casebookSource).toBe('bundled');
-    expect(row.casebook).toBe(36);
-    expect(row.casebookError).toBeUndefined();
-    expect(x.logs).toEqual([]);
-  });
-
-  it('main chat: an empty casebook file turns the casebook off', async () => {
-    const { x, calls } = withReader({}, { files: { [CASEBOOK]: '' } });
-    await x.prompt('go');
-    expect(calls[0].prompt).not.toContain('# Casebook');
-    expect(calls[0].prompt).not.toContain(SHOWN_FIRST);
-    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
-    expect(row.casebookSource).toBe('file');
-    expect(row.casebook).toBe(0);
-    expect(row.casebookError).toBeUndefined();
-    expect(x.logs).toEqual([]);
-  });
-
-  it('main chat: an unreadable casebook file uses the bundled casebook and records why without screen noise', async () => {
-    const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() }, broken: [CASEBOOK] });
-    await x.prompt('go');
-    expect(calls[0].prompt).toContain(SHOWN_FIRST);
-    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
-    expect(row.casebookSource).toBe('bundled');
-    expect(row.casebook).toBe(36);
-    expect(row.casebookError).toContain('EACCES');
-    expect(x.logs).toEqual([]);
-  });
-
-  it('main chat: a casebook path that needs an unset HOME uses the bundled casebook and reports why', async () => {
-    const { x, calls } = withReader({ logFile: '/fixture-home/t/.local/state/effort-live-control/decisions.jsonl' }, { env: { HOME: '' } });
-    await x.prompt('go');
-    expect(calls[0].prompt).toContain(SHOWN_FIRST);
-    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
-    expect(row.casebookSource).toBe('bundled');
-    expect(row.casebookError).toContain('needs HOME');
-    expect(x.logs.join('\n')).toContain('casebookFile ~/.local/state/effort-live-control/casebook.jsonl needs HOME, which is unset; the prompt reader uses the bundled casebook');
-  });
-
-  it('main chat: a casebook file with rows uses only its rows', async () => {
-    const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() } });
-    await x.prompt('go');
-    expect(calls[0].prompt).toContain('plan the cache layer');
-    expect(calls[0].prompt).not.toContain(SHOWN_FIRST);
-    const row = (await x.rows()).find((r) => r.event === 'prompt')!;
-    expect(row.casebookSource).toBe('file');
-    expect(row.casebook).toBe(1);
-  });
-
-  it('main chat: the file is read once and again when its mtime changes', async () => {
-    const { x, calls } = withReader({}, { files: { [CASEBOOK]: caseLine() } });
-    await x.prompt('one');
-    await x.prompt('two');
-    expect(calls[1].prompt).toContain('C1.');
-    expect(calls[1].prompt).not.toContain('C2.');
-    x.files.set(CASEBOOK, caseLine() + '\n' + caseLine({ message: 'second core', level: 'medium' }));
-    await x.touch(CASEBOOK);
-    await x.prompt('three');
-    expect(calls[2].prompt).toContain('C2.');
-  });
-
-  it('main chat: casebookFile expands ~ and an empty one means no casebook', async () => {
-    const own = withReader({ casebookFile: '~/cases.jsonl' }, { files: { '/fixture-home/t/cases.jsonl': caseLine() } });
-    await own.x.prompt('go');
-    expect(own.calls[0].prompt).toContain('# Casebook');
-    const none = withReader({ casebookFile: '' }, { files: { [CASEBOOK]: caseLine() } });
-    await none.x.prompt('go');
-    expect(none.calls[0].prompt).not.toContain('# Casebook');
-    expect(none.x.logs).toEqual([]);
-  });
-
-  it('main chat: EFFORT_LIVE_CONTROL_MAIN_CHAT=off leaves the chat untouched over a reader option, and the reader is not called', async () => {
-    const { x, calls } = withReader({ mainChat: 'reader' }, { env: { EFFORT_LIVE_CONTROL_MAIN_CHAT: 'off' } });
-    await x.prompt('go');
-    expect(calls).toHaveLength(0);
-    expect(await x.mainStep('low')).toBe('low');
-  });
-
-  it('main chat: EFFORT_LIVE_CONTROL_CASEBOOK_FILE overrides the casebookFile option', async () => {
-    const own = withReader({ casebookFile: '' }, { env: { EFFORT_LIVE_CONTROL_CASEBOOK_FILE: '~/cases.jsonl' }, files: { '/fixture-home/t/cases.jsonl': caseLine() } });
-    await own.x.prompt('go');
-    expect(own.calls[0].prompt).toContain('# Casebook');
-  });
-});
-
-suite('main chat: tripwires mid-turn', () => {
-  const failing = (x: ReturnType<typeof engine>, text = 'FAIL a') => x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text, isError: false });
-
-  it('main chat: a failing Bash test run raises it, and a later passing run returns it to the home of the turn', async () => {
-    const { x, script } = withReader();
-    script.next = () => say('0.90 0.05 0.05');
-    await x.prompt('run the tests');
-    expect(await x.mainStep('high', 't1')).toBe('medium');
-    const { out } = await failing(x);
-    expect((out as any).context).toEqual([expect.stringContaining('your reasoning effort is now high')]);
-    expect(await x.mainStep('high', 't1')).toBe('high');
-    await failing(x, 'ok');
-    // a passing run resolves the struggle
-    expect(await x.mainStep('high', 't1')).toBe('medium');
-  });
-
-  it("main chat: a sub-agent's red return raises it, and a green one returns it home", async () => {
-    const { x, script } = withReader();
-    script.next = () => say('0.90 0.05 0.05');
-    await x.prompt('build it');
-    expect(await x.mainStep('high')).toBe('medium');
+suite('main chat: never steered here', () => {
+  it('main chat: every request goes at the effort it carries, through its own failing test runs and red sub-agent returns', async () => {
+    const x = engine(new Map(), { files: LEAD });
+    await x.sessionStart();
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max', undefined]) expect(await x.mainStep(level, 't1', OPUS)).toBe(level);
+    const { out, called } = await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(called).toBe(true);
+    expect((out as any).context).toBeUndefined();
+    expect(await x.mainStep('medium', 't1', OPUS)).toBe('medium');
     await x.spawned('Build X.', 'c1', { subagentType: 'general-purpose' });
     x.statuses.set('c1', 'completed');
     await x.complete('c1', 'BLOCKED builder: no access');
-    expect(await x.mainStep('high')).toBe('high');
-    await x.spawned('Build X again.', 'c2', { subagentType: 'general-purpose' });
-    x.statuses.set('c2', 'completed');
-    await x.complete('c2', 'DONE builder');
-    expect(await x.mainStep('high')).toBe('medium');
+    expect(await x.mainStep('medium', 't2', OPUS)).toBe('medium');
+    expect(x.judgeCalls).toEqual([]);
+    expect((await x.rows()).filter((row) => row.agent === 'main' && row.type !== 'plugin')).toEqual([]);
   });
 
-  it('main chat: the trouble goes on across a new prompt, which only changes the home', async () => {
-    const { x, script } = withReader();
-    script.next = () => say('0.90 0.05 0.05');
-    await x.prompt('run the tests');
-    await x.mainStep('high', 't1');
-    await failing(x);
-    await x.completeMain('tests fail', 't1');
-    await x.prompt('try again');
-    expect(await x.mainStep('high', 't2')).toBe('high'); // still raised
-    await failing(x);
-    expect(await x.mainStep('high', 't2')).toBe('xhigh'); // the failure streak went on: the 2nd failing run
-    await failing(x, 'ok');
-    expect(await x.mainStep('high', 't2')).toBe('medium');
-  });
-
-  it('main chat: spawning a landing type does not lower it', async () => {
-    const { x, script } = withReader({}, { files: LEAD });
-    script.next = () => say('0.05 0.90 0.05');
-    await x.prompt('go');
-    await x.mainStep('medium');
-    await x.spawned('Land it.', 'c1', { subagentType: 'lander' });
-    expect(await x.mainStep('medium')).toBe('high');
-    expect((await x.rows()).filter((row) => row.event === 'landing')).toEqual([]);
-  });
-
-  it("main chat: the main chat's effort_up button works, and moves its level for the turn", async () => {
-    const { x, script } = withReader();
-    script.next = () => say('0.90 0.05 0.05');
-    await x.sessionStart();
-    await x.prompt('go');
-    expect(await x.mainStep('low')).toBe('medium');
-    const { out } = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
-    expect((out as any).result).toContain('raised to high');
-    expect(await x.mainStep('low')).toBe('high');
-  });
-
-  it("main chat: a pressed level holds over the next turn's home until effort_auto, which goes to that turn's home", async () => {
-    const { x, script } = withReader();
-    script.next = () => say('0.90 0.05 0.05');
-    await x.sessionStart();
-    await x.prompt('go');
-    expect(await x.mainStep('low')).toBe('medium');
-    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
-    await x.prompt('next');
-    expect(await x.mainStep('low', 't2')).toBe('high');
-    const { out } = await x.tool(undefined, 'mcp__effort-live-control__effort_auto', {});
-    expect((out as any).result).toBe('Effort back to medium, your home level, for your next replies (your range medium..xhigh); the automatic rules steer it again.');
-    expect(await x.mainStep('low', 't2')).toBe('medium');
+  it('main chat: sub-agents keep being steered with the main chat untouched (positive control)', async () => {
+    const x = engine(new Map(), { files: LEAD, options: { judge: false } });
+    await x.spawned('[effort: low]\nMap X.', 'a1');
+    expect(await x.step('a1', 'high')).toBe('low');
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    expect(await x.mainStep('medium', 't1', OPUS)).toBe('medium');
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.mainStep('medium', 't1', OPUS)).toBe('medium');
   });
 });
 
-suite('main chat: the modes', () => {
-  it('main chat: off changes nothing, and the button is refused', async () => {
-    const { x, calls } = withReader({ mainChat: 'off' });
-    await x.sessionStart();
-    await x.prompt('go');
-    expect(calls).toHaveLength(0);
-    expect(await x.mainStep('low')).toBe('low');
-    const { out } = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
-    expect((out as any).result).toContain('Not available here');
-    expect((await x.rows()).filter((row) => row.agent === 'main' && ['step', 'prompt'].includes(row.event))).toEqual([]);
-    expect(await x.mainStep('high', 't2')).toBe('high');
+suite("the judge's model route", () => {
+  it.each([
+    { name: 'default denial recovers on the current model', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', OPUS, OPUS], answered: true, disabled: false },
+    { name: 'both routes denied degrades once', options: {}, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['haiku', OPUS], answered: false, disabled: true },
+    { name: 'explicit nondefault model is preserved', options: { judgeModel: 'sonnet' }, status: 403, error: 'oauth_org_not_allowed', denied: true, models: ['sonnet', 'sonnet'], answered: false, disabled: false },
+    { name: 'transient failure does not change route', options: {}, status: 529, error: 'overloaded', denied: false, models: ['haiku', 'haiku'], answered: false, disabled: false },
+    { name: 'other 403 does not change route', options: {}, status: 403, error: 'permission_denied', denied: false, models: ['haiku', 'haiku'], answered: false, disabled: false },
+    { name: 'same error at 401 does not change route', options: {}, status: 401, error: 'oauth_org_not_allowed', denied: false, models: ['haiku', 'haiku'], answered: false, disabled: false },
+  ])('judge model route: $name', async ({ options, status, error, denied, models, answered, disabled }) => {
+    const { x, calls, script, fail } = await withJudge(options);
+    script.next = () => calls.at(-1).model === OPUS && !denied
+      ? say('90 - stuck')
+      : { isAnswered: false, reason: 'api-error', status, error, usage: USAGE };
+    await fail();
+    await fail();
+    expect(calls.map((call) => call.model)).toEqual(models);
+    const judged = (await x.rows()).filter((row) => row.event === 'judge' || row.event === 'judge-failed');
+    expect(judged).toHaveLength(2);
+    expect(judged.at(-1)).toEqual(expect.objectContaining(answered ? { event: 'judge', p: 90 } : { event: 'judge-failed' }));
+    expect(x.logs.filter((line) => line.includes('model judgment unavailable for this session'))).toHaveLength(disabled ? 1 : 0);
   });
 
-  it('main chat: tripwires makes no reader call, and its home is the level each request asks for', async () => {
-    const { x, calls } = withReader({ mainChat: 'tripwires' });
-    await x.prompt('go');
-    expect(calls).toHaveLength(0);
-    expect(await x.mainStep('high', 't1')).toBe('high');
-    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh');
-    await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
-    expect(await x.mainStep('xhigh', 't2')).toBe('xhigh'); // already at the ceiling
-    expect(await x.mainStep('medium', 't3')).toBe('xhigh'); // the open struggle goes on into the next turn
-  });
-
-  it('main chat: tripwires raises a request from the level it asks for', async () => {
-    const { x } = withReader({ mainChat: 'tripwires' });
-    expect(await x.mainStep('medium', 't1')).toBe('medium');
-    await x.tool(undefined, 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
-    expect(await x.mainStep('medium', 't1')).toBe('high');
-  });
-
-  it('main chat: the log rows hold no prompt, reply or casebook text with logPackets off, and the packet with it on', async () => {
-    const book = caseLine({ message: 'CASEBOOK-SECRET', previous: 'CASEBOOK-PREV' });
-    const run = async (logPackets: boolean) => {
-      const { x } = withReader({ logPackets }, { files: { [CASEBOOK]: book } });
-      await x.prompt('first');
-      await x.mainStep('medium', 't1');
-      await x.completeMain('SECRET-REPLY');
-      await x.prompt('SECRET-PROMPT');
-      await x.mainStep('medium', 't2');
-      return JSON.stringify(await x.rows());
-    };
-    const quiet = await run(false);
-    for (const secret of ['SECRET-PROMPT', 'SECRET-REPLY', 'CASEBOOK-SECRET', 'CASEBOOK-PREV']) expect(quiet).not.toContain(secret);
-    const loud = await run(true);
-    expect(loud).toContain('SECRET-PROMPT');
-  });
-
-  it('main chat: sub-agents keep behaving as before with the main chat steered (positive control)', async () => {
-    const { x } = withReader();
-    await x.spawned('[effort: low]\nMap X.', 'a1');
-    expect(await x.step('a1', 'high')).toBe('low');
+  it('concurrent judge calls share the default fallback, switching once', async () => {
+    const pending = [deferred<unknown>(), deferred<unknown>()];
+    const files = { ...LEAD, ...agentFile('lead2', 'effort: medium\neffortControl: on') };
+    const { x, calls, script } = await withJudge({}, { files });
+    await x.spawned('Build Y.', 'L2', { subagentType: 'lead2' });
+    script.next = () => calls.at(-1).model === 'haiku' ? pending[calls.length - 1]!.promise : say('90 - stuck');
+    await x.tool('L1', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    await x.tool('L2', 'Bash', { command: 'npm test' }, { result: {}, text: 'FAIL a', isError: false });
+    expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku']);
+    pending[0]!.resolve(REFUSAL_403);
+    await x.tick();
+    pending[1]!.resolve(REFUSAL_403);
+    await x.tick();
+    await x.tick();
+    expect(calls.map((call) => call.model)).toEqual(['haiku', 'haiku', OPUS, OPUS]);
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
+    expect(await x.step('L2', 'low', undefined, OPUS)).toBe('high');
   });
 });
 
@@ -1848,37 +1420,24 @@ suite('plugin log adapter', () => {
     return text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   };
 
-  it('main chat: malformed lines are skipped and logged once with their file and line numbers, without screen noise', async () => {
-    const dir = await fresh();
-    const { x } = withReader({}, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, files: { [CASEBOOK]: [caseLine(), 'not json', caseLine({ level: 'low' })].join('\n') } });
-    await x.prompt('go'); await x.prompt('again'); await x.sessionEnd();
-    expect(x.logs).toEqual([]);
-    expect(await readRows(join(dir, 'effort-live-control'), 'warnings.jsonl')).toEqual([
-      expect.objectContaining({ event: 'casebook-malformed', msg: `effort-live-control: the casebook ${CASEBOOK} has malformed lines 2, 3; they are skipped` }),
-    ]);
-    expect((await x.rows()).find((r) => r.event === 'prompt')!.casebook).toBe(1);
-  });
-
   it('screen policy: a recoverable warning stays off screen with an active log', async () => {
     const dir = await fresh();
-    const { x } = withReader({ logFile: '' }, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, files: { [CASEBOOK]: 'unreadable' }, broken: [CASEBOOK] });
-    await x.prompt('go'); await x.sessionEnd();
-    expect(await readRows(join(dir, 'effort-live-control'), 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'casebook-unreadable' }));
+    const x = engine(new Map(), { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { logFile: '' }, toolList: async () => { throw new Error('list denied'); } });
+    await x.sessionStart(); await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    expect(await readRows(join(dir, 'effort-live-control'), 'warnings.jsonl')).toContainEqual(expect.objectContaining({ event: 'tool-list-failed' }));
     expect(x.logs).toEqual([]);
   });
 
   it.each(['no destination', 'failed write'])('screen policy: a warning reaches the screen with %s', async (mode) => {
-    const { x, calls, script } = withReader({ logFile: '', casebookFile: '' }, {
+    const { x, calls, script, fail } = await withJudge({ logFile: '' }, {
       env: mode === 'no destination' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: await fresh() },
       run: async () => ({ exitCode: 1, stdout: '', stderr: 'append denied' }),
     });
-    script.next = () => calls.at(-1).model === 'haiku'
-      ? { isAnswered: false, reason: 'api-error', status: 403, error: 'oauth_org_not_allowed', usage: USAGE }
-      : say('0.05 0.90 0.05');
-    await x.prompt('go'); await x.sessionEnd();
+    script.next = () => calls.at(-1).model === 'haiku' ? REFUSAL_403 : say('90 - stuck');
+    await fail(); await x.sessionEnd();
     expect(x.logs).toContainEqual(expect.stringContaining('default haiku refused'));
     expect(x.logs.filter((line) => line.includes('plugin log'))).toHaveLength(1);
-    expect(await x.mainStep('medium')).toBe('high');
+    expect(await x.step('L1', 'low', undefined, OPUS)).toBe('high');
   });
 
   it('screen policy: a tool registration error always shows and is logged as an error', async () => {
@@ -1896,17 +1455,19 @@ suite('plugin log adapter', () => {
 
   it.each(['PLUGIN_LOG_DIR', 'fallback'])('writes forced error and warning through %s without changing answers', async (source) => {
     const dir = await fresh();
-    const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { mainChat: 'reader', casebookFile: '/casebook', logFile: '' }, files: { '/casebook': 'unreadable' }, broken: ['/casebook'], reply: () => say('0.90 0.05 0.05') });
-    await x.sessionStart(); await x.sessionStart(); await x.prompt('go');
+    const x = engine(undefined, { env: { HOME: dir, PLUGIN_LOG_DIR: source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels') : undefined }, run: realRun, options: { logFile: '' }, files: LEAD, toolList: async () => { throw new Error('list denied'); } });
+    await x.sessionStart(); await x.sessionStart();
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
     expect(await x.mainStep('medium')).toBe('medium');
+    expect((await x.tool(undefined, 'mcp__effort-live-control__effort_up', {})).out.result).toContain('the user sets it with /effort');
     vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
-    const result = await x.tool(undefined, 'mcp__effort-live-control__effort_up', {});
+    const result = await x.tool('L1', 'mcp__effort-live-control__effort_up', {});
     expect(result.out.result).toBe('Nothing changed: unknown level');
     expect(result.called).toBe(false);
     await x.sessionEnd();
     const target = source === 'PLUGIN_LOG_DIR' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
     expect(await readRows(target, 'errors.jsonl')).toEqual([expect.objectContaining({ ts: '2026-10-14T15:20:31.123Z', plugin: 'effort-live-control', level: 'error', event: 'answer-tool-failed', where: 'hooks/effort-live-control.ts#answerButton', session: 'sess1' })]);
-    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'casebook-unreadable', where: 'hooks/effort-live-control.ts#readCasebook' }));
+    expect(await readRows(target, 'warnings.jsonl')).toContainEqual(expect.objectContaining({ level: 'warning', event: 'tool-list-failed', where: 'hooks/effort-live-control.ts#mainEffortTool' }));
     expect(x.logs).toContain('effort-live-control: answering mcp__effort-live-control__effort_up failed: unknown level; nothing changed');
   });
 
@@ -1915,12 +1476,12 @@ suite('plugin log adapter', () => {
     { level: 'error', file: 'errors.jsonl', event: 'pin-unreadable', component: 'readPin', cause: 'pin store offline' },
   ])('queues $event before a throwing screen call', async ({ level, file, event, component, cause }) => {
     const dir = await fresh();
-    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', logFile: '', casebookFile: '' } });
-    await x.sessionStart(); await x.mainStep('medium');
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { logFile: '' }, files: LEAD });
+    await x.sessionStart(); await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
     x.$.ui.log = () => { throw new Error('screen offline'); };
     if (event === 'answer-tool-failed') vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error(cause); });
     else x.$.state.get = async () => { throw new Error(cause); };
-    await expect(event === 'answer-tool-failed' ? x.tool(undefined, 'mcp__effort-live-control__effort_up', {}) : x.step('unknown', 'medium')).rejects.toThrow('screen offline');
+    await expect(event === 'answer-tool-failed' ? x.tool('L1', 'mcp__effort-live-control__effort_up', {}) : x.step('unknown', 'medium')).rejects.toThrow('screen offline');
     await x.sessionEnd();
     expect(await readRows(join(dir, 'effort-live-control'), file)).toContainEqual(expect.objectContaining({
       plugin: 'effort-live-control', level, event, where: `hooks/effort-live-control.ts#${component}`, session: 'sess1', msg: expect.stringContaining(cause),
@@ -1930,18 +1491,18 @@ suite('plugin log adapter', () => {
   it('reports one process rejection per failing streak, then rearms after a successful real write', async () => {
     const dir = await fresh();
     let broken = true;
-    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, options: { mainChat: 'tripwires', logFile: '' }, run: async (argv, init) => { if (broken) throw new Error('spawn denied'); return realRun(argv, init); } });
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, options: { logFile: '' }, files: LEAD, run: async (argv, init) => { if (broken) throw new Error('spawn denied'); return realRun(argv, init); } });
     await x.sessionStart(); await x.sessionEnd();
     vi.spyOn(Controller.prototype, 'onButton').mockImplementation(() => { throw new Error('unknown level'); });
-    await x.mainStep('medium');
-    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    await x.tool('L1', 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
     const notices = () => x.logs.filter((line) => line.includes('plugin log'));
     expect(notices()).toHaveLength(1); expect(notices()[0]).toContain(join(dir, 'effort-live-control')); expect(notices()[0]).toContain('spawn denied');
     broken = false;
-    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    await x.tool('L1', 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
     expect(await readRows(join(dir, 'effort-live-control'), 'errors.jsonl')).toHaveLength(1);
     broken = true;
-    await x.tool(undefined, 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
+    await x.tool('L1', 'mcp__effort-live-control__effort_up', {}); await x.sessionEnd();
     expect(notices()).toHaveLength(2);
   });
 
@@ -1968,7 +1529,7 @@ suite('plugin log adapter', () => {
 
   it.each(['no-process', 'no-home'])('keeps work unchanged and gives visible logger fallback for %s', async (mode) => {
     const dir = await fresh();
-    const x = engine(undefined, { env: mode === 'no-home' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: dir }, noProcess: mode === 'no-process', options: { floor: 'invalid', logFile: '', mainChat: 'tripwires', casebookFile: '' } });
+    const x = engine(undefined, { env: mode === 'no-home' ? { HOME: undefined, PLUGIN_LOG_DIR: undefined } : { PLUGIN_LOG_DIR: dir }, noProcess: mode === 'no-process', options: { floor: 'invalid', logFile: '' } });
     await x.sessionStart(); expect(await x.mainStep('medium')).toBe('medium'); await x.sessionEnd();
     const notice = x.logs.filter((line) => line.includes('plugin log'));
     expect(notice).toHaveLength(1);
@@ -1979,7 +1540,7 @@ suite('plugin log adapter', () => {
   it.each(['HOME', 'PLUGIN_LOG_DIR'])('does not render a rejected %s read as ordinary absence', async (name) => {
     const dir = await fresh();
     const env: Record<string, string | undefined> = { HOME: dir, PLUGIN_LOG_DIR: join(dir, 'levels') };
-    const x = engine(undefined, { env, run: realRun, options: { logFile: '', casebookFile: '' } });
+    const x = engine(undefined, { env, run: realRun, options: { logFile: '' } });
     x.$.env.get = async (key) => { if (key === name) throw undefined; return env[key]; };
     await x.sessionStart(); await x.sessionEnd();
     const target = name === 'HOME' ? join(dir, 'levels/effort-live-control') : join(dir, '.local/state/effort-live-control/logs');
@@ -1988,22 +1549,24 @@ suite('plugin log adapter', () => {
 
   it('logs unreadable pins, judge fallback and actual effort changes without decision packets', async () => {
     const dir = await fresh();
-    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { mainChat: 'tripwires', judge: true, logFile: '', logPackets: true } });
+    const x = engine(undefined, { env: { PLUGIN_LOG_DIR: dir }, run: realRun, options: { judge: true, logFile: '', logPackets: true }, files: LEAD });
     await x.sessionStart();
-    x.$.state.get = async () => { throw new Error('pin store offline'); };
-    expect(await x.step('unknown', 'medium')).toBe('medium');
-    await x.mainStep('medium');
-    await x.tool(undefined, 'Bash', { command: 'npm test', tool_input: { command: 'npm test' } }, { text: 'private test body', isError: true });
+    await x.spawned('Build X.', 'L1', { subagentType: 'lead' });
+    expect(await x.step('L1', 'medium', undefined, OPUS)).toBe('medium');
+    await x.tool('L1', 'Bash', { command: 'npm test', tool_input: { command: 'npm test' } }, { text: 'private test body', isError: true });
     expect(x.judgeCalls).toHaveLength(1);
     x.judgeCalls[0]!.resolve({ isAnswered: false, reason: 'aborted' });
-    await x.tick(); await x.sessionEnd();
+    await x.tick();
+    expect(await x.step('L1', 'medium', undefined, OPUS)).toBe('high');
+    x.$.state.get = async () => { throw new Error('pin store offline'); };
+    expect(await x.step('unknown', 'medium')).toBe('medium');
+    await x.sessionEnd();
     const target = join(dir, 'effort-live-control');
     expect(await readRows(target, 'errors.jsonl')).toContainEqual(expect.objectContaining({ event: 'pin-unreadable', level: 'error' }));
     expect(await readRows(target, 'errors.jsonl')).toContainEqual(expect.objectContaining({ event: 'judge-failed', level: 'error', where: 'src/control.ts#failed' }));
-    expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'effort-steered', detail: { agent: 'main', from: 'medium', to: 'high' } }));
+    expect(await readRows(target, 'info.jsonl')).toContainEqual(expect.objectContaining({ event: 'effort-steered', detail: { agent: 'L1', from: 'medium', to: 'high' } }));
     const text = JSON.stringify(await readRows(target, 'errors.jsonl'));
     expect(text).not.toContain('private test body');
-    expect(await x.mainStep('medium')).toBe('high'); await x.sessionEnd();
   });
 });
 
@@ -2021,10 +1584,6 @@ suite('environment variables', () => {
     ['EFFORT_LIVE_CONTROL_JUDGE_MODEL', 'two words'],
     ['EFFORT_LIVE_CONTROL_JUDGE_EFFORT', 'ultra'],
     ['EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS', '0'],
-    ['EFFORT_LIVE_CONTROL_MAIN_CHAT', 'sometimes'],
-    ['EFFORT_LIVE_CONTROL_PROMPT_MODEL', 'two words'],
-    ['EFFORT_LIVE_CONTROL_PROMPT_EFFORT', 'ultra'],
-    ['EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS', 'soon'],
     ['EFFORT_LIVE_CONTROL_BUTTONS', 'yes'],
     ['EFFORT_LIVE_CONTROL_ANNOUNCE', 'yes'],
     ['EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS', '["(unclosed"]'],

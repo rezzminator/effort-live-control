@@ -1,6 +1,6 @@
 {
   "name": "effort-live-control",
-  "version": "0.3.6-dev.2",
+  "version": "0.4.0-dev.1",
   "private": true,
   "description": "Set each Claude Code sub-agent's reasoning effort per spawn: start the Agent prompt with [effort: low|medium|high|xhigh|max].",
   "type": "module",

@@ -15,7 +15,7 @@
         "ref": "main"
       },
       "description": "Set each Claude Code sub-agent's reasoning effort per spawn with [effort: low|medium|high|xhigh|max], and let an opted-in agent's effort rise at each failing test run or red sub-task and come home once the trouble resolves.",
-      "version": "0.3.6-dev.2",
+      "version": "0.4.0-dev.1",
       "license": "MIT",
       "keywords": [
         "claude-code",

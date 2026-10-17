@@ -4,6 +4,10 @@ Every release of effort-live-control (named agent-effort through 0.1.3). Version
 
 ## [Unreleased]
 
+### Removed
+- Main-chat steering, end to end: this plugin now steers sub-agents only. The main chat's requests always go at the effort they carry, and `effort_up`, `effort_down` and `effort_auto` refuse it, naming its own effort control (the session's `set_effort` tool, else `/effort`) — what `mainChat: off` did before. The prompt reader, its casebook (the bundled one included) and the main chat's tripwires are gone, with the `prompt.submit` and `turn.start` hooks and the `prompt`, `reader-timeout`, `reader-failed`, `reader-unparsed`, `reader-gated` and main-chat `step` log rows. Reason: the default `mainChat: reader` overwrote the level another main-chat steerer had set; the main chat belongs to [auto-effort](https://github.com/rezzminator/auto-effort).
+- The options `mainChat`, `casebookFile`, `promptModel`, `promptEffort` and `promptTimeoutMs`, and their variables `EFFORT_LIVE_CONTROL_MAIN_CHAT`, `EFFORT_LIVE_CONTROL_CASEBOOK_FILE`, `EFFORT_LIVE_CONTROL_PROMPT_MODEL`, `EFFORT_LIVE_CONTROL_PROMPT_EFFORT` and `EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS`. Migration: delete `pluginConfigs["effort-live-control@…"].options.mainChat` (and `casebookFile`, `promptModel`, `promptEffort`, `promptTimeoutMs`) from `settings.json`, and unset those variables; use auto-effort to steer the main chat. A casebook file at `~/.local/state/effort-live-control/casebook.jsonl` is no longer read and can be deleted.
+
 ## [0.3.6-dev.2] — 2026-10-17
 
 ### Fixed

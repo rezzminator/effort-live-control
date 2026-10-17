@@ -30,7 +30,7 @@ describe('resolveSettings', () => {
     });
     expect(DEFAULTS.testCommandPatterns).toHaveLength(17);
     expect(DEFAULTS.failurePatterns).toHaveLength(6);
-    expect(SETTING_KEYS).toHaveLength(26);
+    expect(SETTING_KEYS).toHaveLength(21);
   });
 
   it('reads valid values of every kind', () => {
@@ -176,36 +176,6 @@ describe('readOnlyCommands', () => {
   });
 });
 
-describe('main chat options', () => {
-  it('mainChat, casebookFile, promptModel, promptEffort and promptTimeoutMs hold their defaults', () => {
-    expect(DEFAULTS).toMatchObject({
-      mainChat: 'reader',
-      casebookFile: '~/.local/state/effort-live-control/casebook.jsonl',
-      promptModel: 'haiku',
-      promptEffort: 'xhigh',
-      promptTimeoutMs: 10000,
-    });
-  });
-
-  it('reads valid values', () => {
-    const raw = { mainChat: 'tripwires', casebookFile: '/x/cases.jsonl', promptModel: 'sonnet', promptEffort: 'low', promptTimeoutMs: '3000' };
-    expect(resolveSettings(raw)).toEqual({ settings: { ...DEFAULTS, ...raw, promptTimeoutMs: 3000 }, errors: [] });
-    expect(resolveSettings({ mainChat: 'off' }).settings.mainChat).toBe('off');
-  });
-
-  it.each([
-    ['mainChat', 'sometimes', 'not off, tripwires or reader'],
-    ['casebookFile', 3, 'not text'],
-    ['promptModel', 'two words', 'not a model alias or id (text without spaces)'],
-    ['promptEffort', 'ultra', 'not a level (low, medium, high, xhigh, max)'],
-    ['promptTimeoutMs', 0, 'not a whole number of at least 1'],
-  ])('%s: a bad value is reported by key and value and the default applies', (key, value, why) => {
-    const { settings, errors } = resolveSettings({ [key]: value });
-    expect(settings[key as keyof typeof DEFAULTS]).toEqual(DEFAULTS[key as keyof typeof DEFAULTS]);
-    expect(errors).toEqual([`effort-live-control: option "${key}" is ${JSON.stringify(value)}, ${why}; using the default ${JSON.stringify(DEFAULTS[key as keyof typeof DEFAULTS])}`]);
-  });
-});
-
 describe('compile', () => {
   it('turns the patterns into regular expressions', () => {
     const compiled = compile(DEFAULTS);
@@ -231,11 +201,6 @@ const ENV_ROWS: EnvRow[] = [
   { key: 'judgeModel', name: 'EFFORT_LIVE_CONTROL_JUDGE_MODEL', env: 'sonnet', expected: 'sonnet', option: 'opus', bad: 'two words' },
   { key: 'judgeEffort', name: 'EFFORT_LIVE_CONTROL_JUDGE_EFFORT', env: 'high', expected: 'high', option: 'low', bad: 'ultra' },
   { key: 'judgeTimeoutMs', name: 'EFFORT_LIVE_CONTROL_JUDGE_TIMEOUT_MS', env: '9000', expected: 9000, option: 8000, bad: '0' },
-  { key: 'mainChat', name: 'EFFORT_LIVE_CONTROL_MAIN_CHAT', env: 'off', expected: 'off', option: 'tripwires', bad: 'sometimes' },
-  { key: 'casebookFile', name: 'EFFORT_LIVE_CONTROL_CASEBOOK_FILE', env: '/cases/env.jsonl', expected: '/cases/env.jsonl', option: '/cases/option.jsonl' },
-  { key: 'promptModel', name: 'EFFORT_LIVE_CONTROL_PROMPT_MODEL', env: 'sonnet', expected: 'sonnet', option: 'opus', bad: 'two words' },
-  { key: 'promptEffort', name: 'EFFORT_LIVE_CONTROL_PROMPT_EFFORT', env: 'low', expected: 'low', option: 'high', bad: 'ultra' },
-  { key: 'promptTimeoutMs', name: 'EFFORT_LIVE_CONTROL_PROMPT_TIMEOUT_MS', env: '2000', expected: 2000, option: 3000, bad: 'soon' },
   { key: 'buttons', name: 'EFFORT_LIVE_CONTROL_BUTTONS', env: '0', expected: false, option: true, bad: 'yes' },
   { key: 'announce', name: 'EFFORT_LIVE_CONTROL_ANNOUNCE', env: 'False', expected: false, option: true, bad: 'no' },
   { key: 'testCommandPatterns', name: 'EFFORT_LIVE_CONTROL_TEST_COMMAND_PATTERNS', env: '["^make$"]', expected: ['^make$'], option: ['^ci$'], bad: '["(unclosed"]' },

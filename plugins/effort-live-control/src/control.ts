@@ -5,7 +5,7 @@ import type { Effort } from './effort.ts';
 import { collapse, packet as buildPacket, parseAnswer, type Tripwire } from './judge.ts';
 import { clamp, rank, step } from './ladder.ts';
 import { returnLine, type ReturnWords } from './signals.ts';
-import { announceLine, autoText, boundText, buttonText, levellessNote, unsteeredNote, whyChild, whyDecayed, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
+import { announceLine, autoText, boundText, buttonText, unsteeredNote, whyChild, whyDecayed, whyJudge, whyRedispatch, whyResolved, WHY_FAIL1, WHY_FAIL2, WHY_JUDGE_FAILED, WHY_LANDING, type Direction } from './text.ts';
 
 export type Row = Record<string, unknown>;
 
@@ -81,8 +81,6 @@ export class Controller {
   private home: Effort;
   private model = '';
   private gated = false;
-  /** The last request carried no effort level: a press waits for one that does. */
-  private levelless = false;
   private line: string | undefined;
 
   constructor(private readonly setup: Setup) {
@@ -103,30 +101,9 @@ export class Controller {
     return this.struggle !== undefined;
   }
 
-  /**
-   * A new turn of the main chat: `home` (held within the range) is the level it starts at and returns to. An open
-   * struggle goes on, its failure streak with it: it resolves to the new home, and the level never sits below it.
-   */
-  setHome(home: Effort): void {
-    const to = clamp(home, this.setup.floor, this.setup.ceiling);
-    this.home = to;
-    if (this.held) {
-      if (this.struggle) this.struggle.pre = to;
-      return;
-    }
-    if (this.struggle) {
-      this.struggle.pre = to;
-      if (rank(this.level) < rank(to)) this.level = to;
-      return;
-    }
-    this.level = to;
-    this.base = to;
-  }
-
   /** The effort to send for one request, or undefined to pass it through untouched. */
   onRequest(model: string, requested: unknown): RequestOutcome {
     this.model = model;
-    this.levelless = false;
     const actions: Action[] = [];
     if (!this.setup.models.some((prefix) => model.startsWith(prefix))) {
       if (!this.gated) actions.push(log('model-gated', { model }));
@@ -142,12 +119,6 @@ export class Controller {
     actions.push(log('step', { model, requested: requested ?? null, sent, struggle: this.struggle !== undefined }));
     if (this.struggle && this.setup.struggleDecay > 0 && this.struggle.quiet >= this.setup.struggleDecay) this.close(actions, 'decay');
     return { send: sent, actions };
-  }
-
-  /** A request that carried no effort level, passed through untouched: a press says its level waits. */
-  onRequestWithoutLevel(model: string): void {
-    this.model = model;
-    this.levelless = true;
   }
 
   /** The agent's reply text of one request; a non-empty one becomes its last words. */
@@ -278,13 +249,11 @@ export class Controller {
   }
 
   /**
-   * A press's note while the last request went to a model outside `models`, or carried no effort level: the level
-   * waits for a request it can go on.
+   * A press's note while the last request went to a model outside `models`: the level waits for a request it can go on.
    */
   private unsteered(): string {
     if (this.model === '') return '';
-    if (!this.setup.models.some((prefix) => this.model.startsWith(prefix))) return unsteeredNote(this.model);
-    return this.levelless ? levellessNote(this.model) : '';
+    return this.setup.models.some((prefix) => this.model.startsWith(prefix)) ? '' : unsteeredNote(this.model);
   }
 
   /** The line owed to the agent's next tool result, handed over once. */

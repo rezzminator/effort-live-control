@@ -7,10 +7,6 @@ import { isEffort, isParentTag, LEVELS, type Effort, type ParentTag } from './ef
 import { parseTripwires } from './judge.ts';
 import { rank } from './ladder.ts';
 
-/** `off`: the main chat is untouched. `tripwires`: steered like a steered agent, at the level each request asks for. `reader`: also set at each new prompt by the prompt reader. */
-export const MAIN_CHATS = ['off', 'tripwires', 'reader'] as const;
-export type MainChat = (typeof MAIN_CHATS)[number];
-
 export type Settings = {
   floor: Effort;
   ceiling: Effort;
@@ -26,12 +22,6 @@ export type Settings = {
   judgeModel: string;
   judgeEffort: Effort;
   judgeTimeoutMs: number;
-  mainChat: MainChat;
-  /** The prompt reader's casebook (JSONL); a leading `~` is the home directory. Empty: none. */
-  casebookFile: string;
-  promptModel: string;
-  promptEffort: Effort;
-  promptTimeoutMs: number;
   buttons: boolean;
   announce: boolean;
   testCommandPatterns: string[];
@@ -57,11 +47,6 @@ export const DEFAULTS: Settings = {
   judgeModel: 'haiku',
   judgeEffort: 'xhigh',
   judgeTimeoutMs: 45000,
-  mainChat: 'reader',
-  casebookFile: '~/.local/state/effort-live-control/casebook.jsonl',
-  promptModel: 'haiku',
-  promptEffort: 'xhigh',
-  promptTimeoutMs: 10000,
   buttons: true,
   announce: true,
   testCommandPatterns: [
@@ -139,11 +124,6 @@ const parsePercent = (raw: unknown): Parsed<number> => {
 
 const parseParentTag = (raw: unknown): Parsed<ParentTag> => (isParentTag(raw) ? good(raw) : bad('not honor or ignore'));
 
-const parseMainChat = (raw: unknown): Parsed<MainChat> => {
-  const found = typeof raw === 'string' ? MAIN_CHATS.find((mode) => mode === raw) : undefined;
-  return found === undefined ? bad(`not ${MAIN_CHATS.slice(0, -1).join(', ')} or ${MAIN_CHATS[MAIN_CHATS.length - 1]}`) : good(found);
-};
-
 const parseText = (raw: unknown): Parsed<string> => (typeof raw === 'string' ? good(raw) : bad('not text'));
 
 function parseTripwireList(raw: unknown): Parsed<string> {
@@ -197,11 +177,6 @@ const PARSERS: { [K in keyof Settings]: (raw: unknown) => Parsed<Settings[K] | '
   judgeModel: parseModel,
   judgeEffort: parseLevel,
   judgeTimeoutMs: parseInt1,
-  mainChat: parseMainChat,
-  casebookFile: parseText,
-  promptModel: parseModel,
-  promptEffort: parseLevel,
-  promptTimeoutMs: parseInt1,
   buttons: parseBool,
   announce: parseBool,
   testCommandPatterns: listOf(regexItem),
