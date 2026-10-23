@@ -2,8 +2,8 @@ name: ci
 
 on:
   pull_request:
-  push:
-    branches: [develop, main]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
