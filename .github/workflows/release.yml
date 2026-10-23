@@ -1,30 +1,75 @@
 name: release
 
 on:
-  push:
-    tags: ['effort-live-control--v*']
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  publish:
+  check:
+    name: check
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install -g @anthropic-ai/claude-code@2.1.283
+      - run: make check
+
+  release:
+    name: release
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: The tag sits on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - name: The tag matches the manifest and CHANGELOG
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: make release
+
+  publish:
+    name: publish
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: The tag is new
+        id: tag
         run: |
-          v="${GITHUB_REF_NAME#effort-live-control--v}"
-          manifest_v="$(node -p 'require("./plugins/effort-live-control/.claude-plugin/plugin.json").version')"
-          [ "$v" = "$manifest_v" ] || { echo "::error::tag $GITHUB_REF_NAME (version $v) does not match plugins/effort-live-control/.claude-plugin/plugin.json's version $manifest_v at the tagged commit"; exit 1; }
-          scripts/release-check.sh
+          v="$(node -p 'require("./plugins/effort-live-control/.claude-plugin/plugin.json").version')"
+          tag="effort-live-control--v$v"
+          rc=0
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || rc=$?
+          if [ "$rc" -eq 0 ]; then echo "::error::$tag already exists"; exit 1; fi
+          if [ "$rc" -ne 2 ]; then echo "::error::could not look up tag $tag (git ls-remote exit $rc)"; exit 1; fi
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Release notes from the CHANGELOG
+        env:
+          v: ${{ steps.tag.outputs.v }}
+        run: |
           v_re=$(printf '%s' "$v" | sed 's/[.]/[.]/g')
           awk -v v="$v_re" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ || /^\[/ {f=0} f' CHANGELOG.md > notes.md
           test -s notes.md
-      - run: gh release create "$GITHUB_REF_NAME" --title "effort-live-control ${GITHUB_REF_NAME#effort-live-control--v}" --notes-file notes.md --verify-tag
+      - run: gh release create "$tag" --target "${{ github.event.pull_request.merge_commit_sha }}" --title "effort-live-control $v" --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
+          tag: ${{ steps.tag.outputs.tag }}
+          v: ${{ steps.tag.outputs.v }}
